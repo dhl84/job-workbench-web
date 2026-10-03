@@ -116,6 +116,30 @@
   </form>
 </dialog>
 
+<dialog id="docDialog" class="log-dialog doc-dialog">
+  <div class="dialog-form">
+    <div class="log-head">
+      <h2 id="docTitle">Note</h2>
+      <div>
+        <button id="docEdit" class="btn" type="button">Edit</button>
+        <button id="docClose" class="btn" type="button">Close</button>
+      </div>
+    </div>
+    <p id="docMeta" class="muted doc-meta"></p>
+    <p id="docBanner" class="banner" hidden></p>
+    <div id="docView" class="doc-view"></div>
+    <textarea id="docText" class="doc-text" spellcheck="true" hidden></textarea>
+    <div id="docEditActions" class="dialog-actions" hidden>
+      <button id="docCancel" class="btn" type="button">Cancel</button>
+      <button id="docSave" class="btn btn-primary" type="button">Save</button>
+    </div>
+    <form id="docAppend" class="doc-append">
+      <input id="docLine" placeholder="Add a dated line, for example: recruiter called, reply on Monday" autocomplete="off">
+      <button class="btn btn-primary" type="submit">Add</button>
+    </form>
+  </div>
+</dialog>
+
 <dialog id="logDialog" class="log-dialog">
   <div class="dialog-form">
     <div class="log-head">
@@ -131,6 +155,7 @@
 </dialog>
 
 <script src="config.js"></script>
+<script src="md.js"></script>
 <script src="data.js" onerror="void 0"></script>
 <script src="app.js"></script>
 </body>

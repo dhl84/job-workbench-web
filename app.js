@@ -28,7 +28,7 @@
 
   var S = {
     data: window.JOBS || null, live: false, cloud: false, worker: "", tab: "active", q: "",
-    selected: null, files: {}, pollTimer: null, logTask: null, logOffset: 0, logTimer: null
+    selected: null, files: {}, notes: {}, pollTimer: null, logTask: null, logOffset: 0, logTimer: null
   };
 
   // ------------------------------------------------------------ helpers ---
@@ -497,9 +497,13 @@
       '<span class="muted">Research: ' + esc(row.research_status || "—") + "</span></div></div>");
 
     html.push('<h3>Files</h3><div id="fileList">' + (live ? (S.files[row.opportunity_id] || '<p class="muted">Loading…</p>') : shareFiles(row)) + "</div>");
+    html.push("<h3>Notes</h3>" + (SB.ready()
+      ? '<div id="noteList">' + (S.notes[row.opportunity_id] || '<p class="muted">Loading…</p>') + "</div>"
+      : '<p class="muted">Sign in to read and change the notes from any device.</p>'));
     $("drawerBody").innerHTML = html.join("");
     renderModelSlot();
     if (live) loadFiles(row.opportunity_id);
+    if (SB.ready()) loadNotes(row);
   }
 
   // Fit verdict, reasons, gaps and partial matches, read by the worker from the application notes.
@@ -602,6 +606,148 @@
     }).catch(function (e) { var el = $("fileList"); if (el) el.innerHTML = '<p class="error-text">' + esc(e.message) + "</p>"; });
   }
 
+  // -------------------------------------------------------------- notes ---
+  // The notes live in Supabase. A sync agent on a computer takes each change to the
+  // repository, and it never merges: a change on both sides raises a conflict flag.
+  var SHARED_DOCS = ["MASTER_PROFILE.md", "applications/INTERVIEW_PREP_PLAYBOOK.md"];
+  var TRACKER = /<!-- tracker:start -->[\s\S]*?<!-- tracker:end -->/;
+  var DOC = { path: "", row: null, readOnly: false, editing: false };
+
+  function who(name) { return name === "page" ? "this page" : (name || "the computer").replace(/\.local$/, ""); }
+
+  function loadNotes(row) {
+    var id = row.opportunity_id, folder = row.application_folder;
+    var query = folder
+      ? SB.rest("documents?select=path,updated_at,conflict&order=path&path=like."
+                + encodeURIComponent("applications/" + folder + "/*"))
+      : Promise.resolve([]);
+    query.then(function (docs) {
+      var el = $("noteList");
+      if (!el || S.selected !== id) return;
+      var base = "applications/" + folder + "/";
+      var items = (docs || []).map(function (d) {
+        return '<li><button type="button" data-doc="' + esc(d.path) + '">' + esc(d.path.slice(base.length)) + "</button>" +
+          (d.conflict ? pill("Conflict", "bad") : "<span>" + esc(fmtTime(d.updated_at)) + "</span>") + "</li>";
+      });
+      // The CV sent, then the current CV when it differs.
+      var cvs = ["submitted_version", "cv_pdf"].filter(function (k) {
+        return row[k] && (k === "submitted_version" || row.cv_pdf !== row.submitted_version);
+      }).map(function (k) {
+        return '<li><button type="button" data-pdf="tex/' + esc(row[k]) + '">' + esc(row[k]) + "</button><span>" +
+          (k === "submitted_version" ? "CV sent" : "CV") + "</span></li>";
+      });
+      var shared = SHARED_DOCS.map(function (path) {
+        return '<li><button type="button" data-doc="' + esc(path) + '" data-readonly>' + esc(path.split("/").pop()) + "</button><span>read only</span></li>";
+      });
+      el.innerHTML = S.notes[id] =
+        (items.length ? '<ul class="notes">' + items.join("") + "</ul>" : '<p class="muted">No notes for this job yet.</p>') +
+        (cvs.length ? '<ul class="notes" style="margin-top:10px">' + cvs.join("") + "</ul>" : "") +
+        '<ul class="notes" style="margin-top:10px">' + shared.join("") + "</ul>";
+    }).catch(function (e) { var el = $("noteList"); if (el) el.innerHTML = '<p class="error-text">' + esc(e.message) + "</p>"; });
+  }
+
+  function openPdf(name) {
+    // Open the window now: a browser blocks a window that opens after a network call.
+    var win = window.open("", "_blank");
+    var c = SB.conf();
+    SB.token().then(function (tok) {
+      return fetch(c.url + "/storage/v1/object/sign/application-files/" + name.split("/").map(encodeURIComponent).join("/"), {
+        method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json", apikey: c.key, Authorization: "Bearer " + tok },
+        body: JSON.stringify({ expiresIn: 300 })
+      });
+    }).then(function (res) { return res.json(); }).then(function (d) {
+      if (!d.signedURL) throw new Error(d.message || d.error || "no link came back");
+      var url = c.url + "/storage/v1" + d.signedURL;
+      if (win) win.location = url; else location.href = url;
+    }).catch(function (e) { if (win) win.close(); alert("Cannot open the PDF: " + e.message); });
+  }
+
+  function openDoc(path, readOnly) {
+    DOC = { path: path, row: null, readOnly: !!readOnly, editing: false };
+    $("docTitle").textContent = path.split("/").pop();
+    $("docLine").value = "";
+    showDoc();
+    $("docDialog").showModal();
+    reloadDoc();
+  }
+
+  function reloadDoc() {
+    return SB.rest("documents?select=path,body,updated_at,updated_by,conflict&path=eq." + encodeURIComponent(DOC.path))
+      .then(function (found) {
+        DOC.row = (found && found[0]) || null;
+        if (!DOC.row) { $("docMeta").textContent = "This note is not in the cloud yet. The sync agent adds it."; return; }
+        showDoc();
+      }).catch(function (e) { $("docMeta").textContent = "Cannot load the note: " + e.message; });
+  }
+
+  function showDoc() {
+    var r = DOC.row, editable = !!r && !DOC.readOnly && !r.conflict;
+    $("docMeta").textContent = r ? DOC.path + " · changed " + fmtTime(r.updated_at) + " by " + who(r.updated_by)
+                                     + (DOC.readOnly ? " · read only here" : "") : "Loading…";
+    $("docBanner").hidden = !(r && r.conflict);
+    $("docBanner").textContent = "This note changed here and on a computer at the same time. The computer kept "
+      + "both versions. Merge them there and run docsync resolve. Then you can change it here again.";
+    $("docView").hidden = DOC.editing;
+    $("docText").hidden = !DOC.editing;
+    $("docEditActions").hidden = !DOC.editing;
+    $("docEdit").hidden = !editable || DOC.editing;
+    $("docAppend").hidden = !editable || DOC.editing;
+    if (!DOC.editing) $("docView").innerHTML = r ? window.renderMarkdown(r.body) : "";
+  }
+
+  function dirty() { return DOC.editing && DOC.row && $("docText").value !== DOC.row.body; }
+
+  function closeDoc(event) {
+    if (dirty() && !confirm("Discard your changes to this note?")) {
+      if (event) event.preventDefault();
+      return;
+    }
+    DOC.editing = false;
+    $("docDialog").close();
+  }
+
+  function saveDoc() {
+    var text = $("docText").value, old = DOC.row.body;
+    var block = (old.match(TRACKER) || [""])[0];
+    if (block && text.indexOf(block) < 0) {
+      alert("The tracker section between the tracker:start and tracker:end lines comes from the job page. "
+            + "Put it back as it was, or press Cancel. Change those values on the job page instead.");
+      return;
+    }
+    if (text === old) { DOC.editing = false; showDoc(); return; }
+    // The note must still be the version this page read. If a computer or another
+    // device changed it, no row matches, the save does nothing, and the text stays.
+    var query = "documents?path=eq." + encodeURIComponent(DOC.path)
+              + "&updated_at=eq." + encodeURIComponent(DOC.row.updated_at) + "&conflict=eq.false";
+    $("docSave").disabled = true;
+    SB.rest(query, "PATCH", { body: text, updated_by: "page" }, "return=representation").then(function (out) {
+      if (!out || !out.length) {
+        alert("This note changed somewhere else after you opened it. Nothing was saved, and your text "
+              + "is still in the box. Copy it, press Cancel to see the new version, then add your change again.");
+        return;
+      }
+      DOC.row = out[0]; DOC.editing = false; showDoc(); refreshNotes();
+    }).catch(function (e) { alert("Save failed: " + e.message); })
+      .then(function () { $("docSave").disabled = false; });
+  }
+
+  function appendLine(event) {
+    event.preventDefault();
+    var line = $("docLine").value.replace(/\s+/g, " ").trim();
+    if (!line) return;
+    SB.rest("rpc/append_note", "POST", { doc_path: DOC.path, line: line }).then(function (out) {
+      if (!out || !out.length) {
+        alert("The line was not added: this note is under a conflict. Settle it on a computer first.");
+        return reloadDoc();
+      }
+      DOC.row = out[0]; $("docLine").value = ""; showDoc(); refreshNotes();
+      var view = $("docView"); view.scrollTop = view.scrollHeight;
+    }).catch(function (e) { alert("The line was not added: " + e.message); });
+  }
+
+  function refreshNotes() { var row = find(S.selected); if (row) loadNotes(row); }
+
   // ------------------------------------------------------------ actions ---
   function update(id, changes) {
     if (S.cloud && !S.live) return cloudUpdate(id, changes);
@@ -614,6 +760,11 @@
   function onDrawerClick(event) {
     var target = event.target.closest("button");
     if (!target) return;
+    if (target.hasAttribute("data-doc")) {
+      openDoc(target.getAttribute("data-doc"), target.hasAttribute("data-readonly"));
+      return;
+    }
+    if (target.hasAttribute("data-pdf")) { openPdf(target.getAttribute("data-pdf")); return; }
     var row = find(S.selected);
     if (!row) return;
     var action = target.getAttribute("data-action");
@@ -754,6 +905,17 @@
         .catch(function (error) { message.hidden = false; message.textContent = error.message; })
         .then(function () { button.disabled = false; button.textContent = "Sign in"; });
     });
+    $("docEdit").addEventListener("click", function () {
+      DOC.editing = true; $("docText").value = DOC.row.body; showDoc(); $("docText").focus();
+    });
+    $("docCancel").addEventListener("click", function () {
+      if (dirty() && !confirm("Discard your changes to this note?")) return;
+      DOC.editing = false; reloadDoc();
+    });
+    $("docSave").addEventListener("click", saveDoc);
+    $("docAppend").addEventListener("submit", appendLine);
+    $("docClose").addEventListener("click", function () { closeDoc(); });
+    $("docDialog").addEventListener("cancel", closeDoc);   // the Escape key
     $("signOutButton").addEventListener("click", function () {
       SB.signOut();
       $("signInDialog").close();
