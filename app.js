@@ -1,5 +1,6 @@
-/* Job Workbench page. Works from the NAS (file://) with a read-only snapshot in data.js,
-   and becomes live when it reaches the worker on the PC with the saved token. */
+/* Job Workbench page. Live when it reaches the worker on the PC with the saved token.
+   Anywhere else it reads and writes the tracker and the notes in Supabase after a
+   sign-in. */
 (function () {
   "use strict";
 
@@ -27,7 +28,7 @@
   };
 
   var S = {
-    data: window.JOBS || null, live: false, cloud: false, worker: "", tab: "active", q: "",
+    data: null, live: false, cloud: false, worker: "", tab: "active", q: "",
     selected: null, files: {}, notes: {}, pollTimer: null, logTask: null, logOffset: 0, logTimer: null
   };
 
@@ -85,16 +86,11 @@
     if (!S.live) return "";
     return S.worker + "/" + href + (href.indexOf("?") < 0 ? "?" : "&") + "token=" + encodeURIComponent(settings().token);
   }
-  function snapshotCv(row, key) {
-    var name = row[key || "cv_pdf"];
-    if (S.live || !name || location.protocol !== "file:") return "";
-    return "files/" + encodeURIComponent(name);
-  }
-  // A file of the application folder: from the worker when live, else the NAS copy.
+  // A file of the application folder, from the worker. Away from home the Notes list
+  // opens the same file from Supabase.
   function folderFile(row, name) {
-    var path = row.application_folder + "/" + name.split("/").map(encodeURIComponent).join("/");
-    if (S.live) return fileUrl("files/" + path);
-    return location.protocol === "file:" && (row.share_files || []).indexOf(name) >= 0 ? "files/" + path : "";
+    if (!S.live) return "";
+    return fileUrl("files/" + row.application_folder + "/" + name.split("/").map(encodeURIComponent).join("/"));
   }
 
   // ----------------------------------------------------------- supabase ---
@@ -346,7 +342,7 @@
 
   /// The worker is the first choice, because only it runs the AI work and holds the
   /// files. The Supabase account is the second, so the tracker still works away from
-  /// home. The snapshot in data.js is the last.
+  /// home.
   function fallback(message) {
     if (SB.ready()) return cloudRefresh();
     goOffline(message + (SB.configured() ? " Sign in to use the tracker from here." : ""));
@@ -365,7 +361,7 @@
     clearTimeout(S.pollTimer);
     api("GET", "/api/state").then(function (data) {
       S.data = data; S.live = true;
-      showBanner(data.share && data.share.ok === false ? data.share.message : "");
+      showBanner("");
       setConnection(); render();
       var busy = (data.tasks || []).some(function (t) { return t.status === "running" || t.status === "queued"; }) ||
         rows().some(function (r) { return r.research_status === "fetching" || r.research_status === "pending"; });
@@ -383,7 +379,7 @@
       el.textContent = "Cloud · " + (SB.email() || "signed in");
     } else {
       el.className = "pill pill-warn";
-      el.textContent = S.data ? "Read-only snapshot · " + fmtTime(S.data.generated_at) : "Not connected";
+      el.textContent = "Not connected";
     }
     $("addButton").disabled = !(S.live || S.cloud);
     var signIn = $("signInButton");
@@ -416,7 +412,7 @@
   function render() {
     renderMetrics(); renderTabs(); renderRows(); renderDrawer();
     $("footnote").textContent = S.data
-      ? "Snapshot generated " + fmtTime(S.data.generated_at) + ". No-response deadline: one calendar month after submission, unless the employer replies. Adverts of active jobs are checked once a day on the employer site and LinkedIn."
+      ? "Loaded " + fmtTime(S.data.generated_at) + ". No-response deadline: one calendar month after submission, unless the employer replies. Adverts of active jobs are checked once a day on the employer site and LinkedIn."
       : "";
   }
 
@@ -451,7 +447,7 @@
       var d = daysUntil(r.deadline);
       var deadline = r.deadline ? fmtDate(r.deadline) + (d !== null && r.display_status === "applied" ? ' <span class="muted">(' + (d >= 0 ? d + " days" : "passed") + ")</span>" : "") : '<span class="muted">—</span>';
       var research = r.research_status === "fetching" || r.research_status === "pending" ? " " + pill("Fetching advert", "accent") : r.research_status === "failed" ? " " + pill("Advert not fetched", "warn") : "";
-      var cvHref = S.live && r.cv_pdf ? fileUrl("tex/" + encodeURIComponent(r.cv_pdf)) : snapshotCv(r);
+      var cvHref = S.live && r.cv_pdf ? fileUrl("tex/" + encodeURIComponent(r.cv_pdf)) : "";
       var cv = r.cv_pdf ? (cvHref ? '<a href="' + esc(cvHref) + '" target="_blank" rel="noopener" data-stop>PDF</a>' : "Yes") : '<span class="muted">—</span>';
       var sub = [r.location, r.package_summary].filter(Boolean).join(" · ");
       return '<tr data-id="' + esc(r.opportunity_id) + '"' + (S.selected === r.opportunity_id ? ' class="selected"' : "") + ">" +
@@ -495,7 +491,7 @@
     var set = settings();
     var tasks = ((S.data && S.data.tasks) || []).filter(function (t) { return t.opportunity_id === row.opportunity_id; });
     var advert = row.employer_url || row.discovery_url;
-    var cvHref = row.cv_pdf ? (live ? fileUrl("tex/" + encodeURIComponent(row.cv_pdf)) : snapshotCv(row)) : "";
+    var cvHref = row.cv_pdf && live ? fileUrl("tex/" + encodeURIComponent(row.cv_pdf)) : "";
     var html = [];
     html.push('<div class="drawer-head"><div><h2>' + esc(row.job_title || "Untitled role") + '</h2><div class="muted">' + esc(row.employer_name) + "</div></div>" +
       '<button class="btn" type="button" data-action="close">Close</button></div>');
@@ -556,7 +552,7 @@
       '<div class="row" style="margin-top:8px"><button class="btn" type="button" data-action="refetch"' + wdis + ">Fetch or save advert</button>" +
       '<span class="muted">Research: ' + esc(row.research_status || "—") + "</span></div></div>");
 
-    html.push('<h3>Files</h3><div id="fileList">' + (live ? (S.files[row.opportunity_id] || '<p class="muted">Loading…</p>') : shareFiles(row)) + "</div>");
+    html.push('<h3>Files</h3><div id="fileList">' + (live ? (S.files[row.opportunity_id] || '<p class="muted">Loading…</p>') : '<p class="muted">The worker on the PC lists the files. Away from home, the Notes below open them.</p>') + "</div>");
     html.push("<h3>Notes</h3>" + (SB.ready()
       ? '<div id="noteList">' + (S.notes[row.opportunity_id] || '<p class="muted">Loading…</p>') + "</div>"
       : '<p class="muted">Sign in to read and change the notes from any device.</p>'));
@@ -630,17 +626,6 @@
     return html.join("");
   }
 
-  // The NAS copies of the folder, for the page opened from the share with no worker.
-  function shareFiles(row) {
-    var names = row.share_files || [];
-    if (location.protocol !== "file:" || !names.length) return '<p class="muted">Files open when the worker is live, or from the NAS page.</p>';
-    var cvs = ["submitted_version", "cv_pdf"].filter(function (k) { return row[k]; }).map(function (k) {
-      return '<li><a href="' + esc(snapshotCv(row, k)) + '" target="_blank" rel="noopener">tex/' + esc(row[k]) + "</a></li>";
-    });
-    return '<ul class="files">' + cvs.join("") + names.map(function (name) {
-      return '<li><a href="' + esc(folderFile(row, name)) + '" target="_blank" rel="noopener">' + esc(name) + "</a></li>";
-    }).join("") + "</ul>";
-  }
 
   function fact(label, value) { return value ? "<dt>" + esc(label) + "</dt><dd>" + esc(value) + "</dd>" : ""; }
 
