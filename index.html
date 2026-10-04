@@ -58,6 +58,7 @@
   <form id="addForm" method="dialog" class="dialog-form">
     <h2>Add a job</h2>
     <p class="hint">Paste the official advert link. The worker fetches the advert from Ashby, Greenhouse, Lever, Workable or the employer page. If a page blocks fetching, paste the advert text instead.</p>
+    <p class="hint">With the PC off, give the employer and the job title. The page saves the job and any advert text that you paste. The PC fetches the advert later, when you ask it to.</p>
     <label>Advert link<input name="url" type="url" placeholder="https://jobs.ashbyhq.com/…"></label>
     <div class="grid2">
       <label>Employer<input name="employer_name" placeholder="Filled from the advert if blank"></label>
@@ -105,8 +106,21 @@
   <form id="signInForm" method="dialog" class="dialog-form">
     <h2>Sign in</h2>
     <p class="hint">Your Supabase account. This lets the page read and change the tracker from any device, without the worker on the PC.</p>
-    <label>Email<input name="email" type="email" autocomplete="username" required></label>
-    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <label id="signInEmailRow">Email<input name="email" type="email" autocomplete="username" required></label>
+    <label id="signInPasswordRow">Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <label id="signInCodeRow" hidden>Code from your authenticator app<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+    <div id="mfaSection" class="mfa" hidden>
+      <h3>Two-step sign-in</h3>
+      <p id="mfaState" class="hint"></p>
+      <button id="mfaStart" class="btn" type="button">Set up two-step sign-in</button>
+      <div id="mfaEnrol" hidden>
+        <p class="hint">Scan the code with your authenticator app, or type the secret into it. Keep the secret in your password manager: the PC and the MacBook need it too. See supabase/SETUP.md, section 8.</p>
+        <img id="mfaQr" class="mfa-qr" alt="QR code for the authenticator app" width="180" height="180">
+        <p><code id="mfaSecret" class="mfa-secret"></code></p>
+        <label>Code from the app<input id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+        <button id="mfaConfirm" class="btn btn-primary" type="button">Confirm</button>
+      </div>
+    </div>
     <p id="signInMessage" class="form-message" hidden></p>
     <div class="dialog-actions">
       <button id="signOutButton" class="btn btn-danger" type="button">Sign out</button>

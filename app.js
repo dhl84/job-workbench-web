@@ -121,7 +121,7 @@
     },
     email: function () { var s = this.session(); return (s && s.user && s.user.email) || ""; },
     configured: function () { var c = this.conf(); return !!(c.url && c.key); },
-    ready: function () { return this.configured() && !!this.session(); },
+    ready: function () { return this.configured() && !!this.session() && !this.needsCode(); },
     auth: function (grant, body) {
       var c = this.conf();
       return fetch(c.url + "/auth/v1/token?grant_type=" + grant, {
@@ -143,6 +143,66 @@
       return this.auth("password", { email: email, password: password });
     },
     signOut: function () { this.session(null); },
+    // The second sign-in factor, an authenticator app. A session from the password
+    // alone has the level "aal1". After the code it has "aal2". Once
+    // supabase/manual/require_second_factor.sql runs, an aal1 session reads nothing.
+    aal: function () {
+      var s = this.session();
+      try {
+        var part = s.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+        return JSON.parse(atob(part)).aal || "";
+      } catch (e) { return ""; }
+    },
+    factor: function () {
+      var s = this.session(), list = (s && s.user && s.user.factors) || [];
+      return list.filter(function (f) { return f.status === "verified" && f.factor_type === "totp"; })[0] || null;
+    },
+    needsCode: function () { return !!this.session() && !!this.factor() && this.aal() !== "aal2"; },
+    authCall: function (path, method, body) {
+      var c = this.conf();
+      return this.token().then(function (tok) {
+        return fetch(c.url + "/auth/v1/" + path, {
+          method: method || "GET", credentials: "omit",
+          headers: { "Content-Type": "application/json", apikey: c.key, Authorization: "Bearer " + tok },
+          body: body ? JSON.stringify(body) : undefined
+        });
+      }).then(function (res) {
+        return res.text().then(function (text) {
+          var d = text ? JSON.parse(text) : {};
+          if (!res.ok) throw new Error(d.msg || d.message || d.error_description || d.error || ("HTTP " + res.status));
+          return d;
+        });
+      });
+    },
+    verifyCode: function (factorId, code) {
+      return this.authCall("factors/" + factorId + "/challenge", "POST", {}).then(function (ch) {
+        return SB.authCall("factors/" + factorId + "/verify", "POST", { challenge_id: ch.id, code: code });
+      }).then(function (d) {
+        if (!d.access_token) throw new Error("The code was not accepted.");
+        d.expires_at = Date.now() + ((d.expires_in || 3600) * 1000);
+        SB.session(d);
+        return d;
+      });
+    },
+    // The user record, so a session saved before an enrolment learns of the factor.
+    refreshUser: function () {
+      return this.authCall("user").then(function (user) {
+        var s = SB.session();
+        if (s) { s.user = user; SB.session(s); }
+        return user;
+      });
+    },
+    // Start an enrolment. An earlier attempt that was never confirmed blocks a new
+    // one, so remove it first.
+    enrol: function () {
+      return this.refreshUser().then(function (user) {
+        var stale = (user.factors || []).filter(function (f) { return f.status !== "verified"; });
+        return Promise.all(stale.map(function (f) { return SB.authCall("factors/" + f.id, "DELETE"); }));
+      }).then(function () {
+        return SB.authCall("factors", "POST", { factor_type: "totp",
+          friendly_name: "Authenticator " + new Date().toISOString().slice(0, 10) });
+      });
+    },
     token: function () {
       var held = this.session();
       if (!held) return Promise.reject(new Error("Not signed in."));
@@ -325,11 +385,11 @@
       el.className = "pill pill-warn";
       el.textContent = S.data ? "Read-only snapshot · " + fmtTime(S.data.generated_at) : "Not connected";
     }
-    $("addButton").disabled = !S.live;
+    $("addButton").disabled = !(S.live || S.cloud);
     var signIn = $("signInButton");
     if (signIn) {
       signIn.hidden = !SB.configured();
-      signIn.textContent = SB.session() ? "Account" : "Sign in";
+      signIn.textContent = SB.ready() ? "Account" : "Sign in";
     }
   }
 
@@ -566,7 +626,7 @@
       return href ? '<a href="' + esc(href) + '" target="_blank" rel="noopener">' + esc(label) + "</a>" : esc(label);
     });
     html.push('<p class="muted" style="margin:8px 0 0">Saved adverts: ' + (copies.length ? copies.join(" · ") : "none") + "</p>");
-    html.push('<div class="row" style="margin-top:8px"><button class="btn" type="button" data-action="check-posting"' + dis + ">Check now</button></div></div>");
+    html.push('<div class="row" style="margin-top:8px"><button class="btn" type="button" data-action="check-posting"' + (live ? "" : " disabled") + ">Check now</button></div></div>");
     return html.join("");
   }
 
@@ -641,9 +701,117 @@
       });
       el.innerHTML = S.notes[id] =
         (items.length ? '<ul class="notes">' + items.join("") + "</ul>" : '<p class="muted">No notes for this job yet.</p>') +
+        '<form class="new-note" data-newnote><input name="note" placeholder="New note name, for example interview-record-20261005" autocomplete="off" required>' +
+        '<button class="btn" type="submit">New note</button></form>' +
         (cvs.length ? '<ul class="notes" style="margin-top:10px">' + cvs.join("") + "</ul>" : "") +
         '<ul class="notes" style="margin-top:10px">' + shared.join("") + "</ul>";
     }).catch(function (e) { var el = $("noteList"); if (el) el.innerHTML = '<p class="error-text">' + esc(e.message) + "</p>"; });
+  }
+
+  // ------------------------------------------- cloud: new jobs and new notes ---
+  // The folder rule of store.ensure_folder, so a job added here gets the folder the
+  // worker would give it. The sync agent on the PC or the MacBook writes the notes of a
+  // new folder to its disk, and git takes them to the other machine.
+  function slugify(text) {
+    var s = String(text || "").toLowerCase().replace(/&/g, " ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return s.slice(0, 60).replace(/^-+|-+$/g, "") || "role";
+  }
+  function folderFor(employer, title) {
+    var base = (slugify(employer || "employer") + "-" + slugify(title || "role")).slice(0, 80).replace(/^-+|-+$/g, "")
+             + "-" + londonToday().replace(/-/g, "");
+    var taken = rows().map(function (r) { return r.application_folder; });
+    var name = base, n = 2;
+    while (taken.indexOf(name) >= 0) { name = base + "-" + n; n += 1; }
+    return name;
+  }
+  function newId() {
+    var bytes = new Uint8Array(5);
+    crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+  }
+  function nowUtc() { return new Date().toISOString().replace(/\.\d+Z$/, "+00:00"); }
+  function londonStamp() {
+    var parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit",
+      hour12: false, timeZoneName: "short" }).formatToParts(new Date());
+    var get = function (t) { return (parts.filter(function (p) { return p.type === t; })[0] || {}).value || ""; };
+    return londonToday() + " " + get("hour") + ":" + get("minute") + " " + get("timeZoneName");
+  }
+  function sameUrl(a, b) {
+    var key = function (u) { return String(u || "").split("?")[0].replace(/\/+$/, "").toLowerCase(); };
+    return !!key(a) && key(a) === key(b);
+  }
+  // The duplicate test of store.find_duplicate: the same advert link, or the same
+  // employer and job title.
+  function duplicateOf(body) {
+    var low = function (s) { return String(s || "").toLowerCase(); };
+    return rows().filter(function (r) {
+      return (body.url && (sameUrl(r.discovery_url, body.url) || sameUrl(r.employer_url, body.url))) ||
+        (body.employer_name && body.job_title && low(r.employer_name) === low(body.employer_name) &&
+         low(r.job_title) === low(body.job_title));
+    })[0] || null;
+  }
+  function statusNote(id, employer, title) {
+    return "# Application status\n\n- Employer: " + employer + "\n- Role: " + title + "\n- Workbench ID: " + id
+      + "\n- Captured: " + londonToday() + "\n\nThe workbench appends dated status changes below. "
+      + "See the [tracking policy](../README.md).\n\n## Status history\n\n- " + londonStamp()
+      + ": Added on the page, with no worker running. The PC fetches no advert until you ask it to.\n";
+  }
+
+  function cloudAdd(body) {
+    if (!body.employer_name || !body.job_title) {
+      return Promise.reject(new Error("With the PC off, give the employer and the job title. The page cannot fetch the advert."));
+    }
+    if (!body.allow_duplicate) {
+      var dup = duplicateOf(body);
+      if (dup) return Promise.resolve({ duplicate: dup });
+    }
+    var id = newId(), folder = folderFor(body.employer_name, body.job_title), stamp = nowUtc();
+    var row = { opportunity_id: id, employer_name: body.employer_name, job_title: body.job_title,
+      discovery_url: body.url, notes: body.notes, application_status: "saved", applied: "false",
+      application_folder: folder, datetime_captured: stamp, updated_at: stamp };
+    var base = "applications/" + folder + "/";
+    var docs = [{ path: base + "status.md", body: statusNote(id, body.employer_name, body.job_title), updated_by: "page" }];
+    if (body.text) {
+      docs.push({ path: base + "job-ad.md", updated_by: "page",
+        body: "# " + body.job_title + ": " + body.employer_name + "\n\nSource: " + (body.url || "pasted on the page")
+          + "\nRetrieved: " + londonToday() + "\nMethod: pasted on the page\n\n" + body.text + "\n" });
+    }
+    return SB.rest("opportunities", "POST", row, "return=minimal").then(function () {
+      return SB.rest("documents", "POST", docs, "return=minimal");
+    }).then(function () { return { opportunity: row }; });
+  }
+
+  // Give a job without a folder its folder and status note. The filter on the empty
+  // folder makes a second device that does the same find no row.
+  function claimFolder(row) {
+    var folder = folderFor(row.employer_name, row.job_title);
+    var query = "opportunities?opportunity_id=eq." + encodeURIComponent(row.opportunity_id) + "&application_folder=eq.";
+    return SB.rest(query, "PATCH", { application_folder: folder, updated_at: nowUtc() }, "return=representation")
+      .then(function (out) {
+        if (!out || !out.length) throw new Error("the job changed on another device. Reload the page and try again");
+        row.application_folder = folder;
+        return SB.rest("documents", "POST", [{ path: "applications/" + folder + "/status.md",
+          body: statusNote(row.opportunity_id, row.employer_name, row.job_title), updated_by: "page" }], "return=minimal");
+      }).then(function () { return folder; });
+  }
+
+  function createNote(row, name) {
+    name = String(name || "").trim().toLowerCase().replace(/\.md$/, "");
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+      alert("Use lower-case letters, digits and hyphens, for example interview-record-20261005.");
+      return;
+    }
+    var ready = row.application_folder ? Promise.resolve(row.application_folder) : claimFolder(row);
+    ready.then(function (folder) {
+      var path = "applications/" + folder + "/" + name + ".md";
+      var heading = name.replace(/-/g, " ");
+      return SB.rest("documents", "POST", [{ path: path, updated_by: "page",
+        body: "# " + heading.charAt(0).toUpperCase() + heading.slice(1) + "\n\n" }], "return=minimal")
+        .then(function () { refreshNotes(); openDoc(path, false); });
+    }).catch(function (e) {
+      alert(/duplicate|already exists|409/i.test(e.message) ? "A note with that name exists already."
+        : "The note was not created: " + e.message);
+    });
   }
 
   function openPdf(name) {
@@ -832,7 +1000,8 @@
     ["url", "employer_name", "job_title", "text", "notes"].forEach(function (k) { body[k] = form.elements[k].value.trim(); });
     if (form.dataset.allowDuplicate === "1") body.allow_duplicate = true;
     msg.hidden = true; $("addSubmit").disabled = true;
-    api("POST", "/api/opportunities", body).then(function (res) {
+    var cloud = S.cloud && !S.live;   // the PC is off: save the job straight to Supabase
+    (cloud ? cloudAdd(body) : api("POST", "/api/opportunities", body)).then(function (res) {
       $("addSubmit").disabled = false;
       if (res.duplicate) {
         msg.hidden = false;
@@ -843,7 +1012,7 @@
       form.reset(); delete form.dataset.allowDuplicate;
       $("addDialog").close();
       S.selected = res.opportunity.opportunity_id; S.tab = "active";
-      refresh();
+      if (cloud) cloudRefresh(); else refresh();
     }).catch(function (e) { $("addSubmit").disabled = false; msg.hidden = false; msg.textContent = e.message; });
   }
 
@@ -879,6 +1048,13 @@
       S.selected = tr.getAttribute("data-id"); render();
     });
     $("drawerBody").addEventListener("click", onDrawerClick);
+    $("drawerBody").addEventListener("submit", function (e) {
+      var form = e.target.closest("[data-newnote]");
+      if (!form) return;
+      e.preventDefault();
+      var row = find(S.selected);
+      if (row) createNote(row, form.elements.note.value);
+    });
     $("drawerBody").addEventListener("change", function (e) { if (e.target.id === "fProvider") renderModelSlot(); });
     $("scrim").addEventListener("click", function () { S.selected = null; render(); });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && S.selected && !document.querySelector("dialog[open]")) { S.selected = null; render(); } });
@@ -888,22 +1064,60 @@
       var form = $("signInForm");
       form.elements.email.value = SB.email();
       form.elements.password.value = "";
+      form.elements.code.value = "";
       $("signInMessage").hidden = true;
       $("signOutButton").hidden = !SB.session();
+      codeStep(SB.needsCode());
+      showFactorState();
       $("signInDialog").showModal();
     });
     $("signInForm").addEventListener("submit", function (event) {
       event.preventDefault();
       var form = event.target, message = $("signInMessage");
       var button = form.querySelector('button[type="submit"]');
+      var withCode = !$("signInCodeRow").hidden;
       message.hidden = true; button.disabled = true; button.textContent = "Signing in…";
-      SB.signIn(form.elements.email.value.trim(), form.elements.password.value)
-        .then(function () {
+      var work = withCode
+        ? SB.verifyCode(SB.factor().id, form.elements.code.value.trim())
+        : SB.signIn(form.elements.email.value.trim(), form.elements.password.value);
+      work.then(function () {
+          if (SB.needsCode()) {   // the password was right; the account asks for the code
+            codeStep(true);
+            message.hidden = false;
+            message.textContent = "Enter the 6-digit code from your authenticator app.";
+            return;
+          }
           $("signInDialog").close();
           connect();   // the worker still wins when it answers
         })
         .catch(function (error) { message.hidden = false; message.textContent = error.message; })
         .then(function () { button.disabled = false; button.textContent = "Sign in"; });
+    });
+    $("mfaStart").addEventListener("click", function () {
+      var message = $("signInMessage");
+      message.hidden = true;
+      SB.enrol().then(function (d) {
+        var qr = (d.totp && d.totp.qr_code) || "";
+        $("mfaQr").src = qr.indexOf("data:") === 0 ? qr : "data:image/svg+xml;charset=utf-8," + encodeURIComponent(qr);
+        $("mfaSecret").textContent = (d.totp && d.totp.secret) || "";
+        $("mfaEnrol").dataset.factor = d.id;
+        $("mfaEnrol").hidden = false; $("mfaStart").hidden = true;
+        $("mfaCode").value = ""; $("mfaCode").focus();
+      }).catch(function (e) { message.hidden = false; message.textContent = "Set-up failed: " + e.message; });
+    });
+    $("mfaConfirm").addEventListener("click", function () {
+      var message = $("signInMessage");
+      message.hidden = true;
+      SB.verifyCode($("mfaEnrol").dataset.factor, $("mfaCode").value.trim())
+        .then(function () { return SB.refreshUser(); })
+        .then(function () {
+          $("mfaEnrol").hidden = true; $("mfaSecret").textContent = ""; $("mfaQr").removeAttribute("src");
+          showFactorState();
+          message.hidden = false;
+          message.textContent = "Two-step sign-in is on. Now give the PC and the MacBook the secret, "
+            + "then run the SQL file. See supabase/SETUP.md, section 8.";
+        })
+        .catch(function (e) { message.hidden = false; message.textContent = "The code was not accepted: " + e.message; });
     });
     $("docEdit").addEventListener("click", function () {
       DOC.editing = true; $("docText").value = DOC.row.body; showDoc(); $("docText").focus();
@@ -931,7 +1145,33 @@
       b.addEventListener("click", function () { b.closest("dialog").close(); });
     });
     $("logDialog").addEventListener("close", function () { clearTimeout(S.logTimer); S.logTask = null; });
-    setConnection(); render(); connect();
+    setConnection(); render();
+    // A session saved before the account got its second factor does not know of it.
+    // Ask for the user record first, so the page asks for the code instead of
+    // showing an empty table.
+    if (SB.configured() && SB.session()) SB.refreshUser().catch(function () {}).then(connect);
+    else connect();
+  }
+
+  // The sign-in dialog shows either the email and password, or the code step.
+  function codeStep(on) {
+    var f = $("signInForm");
+    $("signInEmailRow").hidden = on; $("signInPasswordRow").hidden = on;
+    f.elements.email.required = !on; f.elements.password.required = !on;
+    $("signInCodeRow").hidden = !on; f.elements.code.required = on;
+    if (on) f.elements.code.focus();
+  }
+
+  function showFactorState() {
+    var signedIn = SB.ready();
+    $("mfaSection").hidden = !signedIn;
+    if (!signedIn) return;
+    var on = !!SB.factor();
+    $("mfaState").textContent = on
+      ? "On. Each new sign-in asks for a code from your authenticator app."
+      : "Off. One password protects the account. Set up an authenticator app to add a second step.";
+    $("mfaStart").hidden = on;
+    $("mfaEnrol").hidden = true;
   }
 
   boot();

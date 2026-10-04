@@ -1,3 +1,6 @@
+/* An element with the hidden attribute stays hidden, whatever display its class sets. */
+[hidden] { display: none !important; }
+
 :root {
   --bg: #f5f6f8;
   --surface: #ffffff;
@@ -180,3 +183,11 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
 @media (max-width: 640px) {
   .doc-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
 }
+
+/* Two-step sign-in and new notes */
+.mfa { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.mfa h3 { margin: 0; font-size: 14px; }
+.mfa-qr { background: #ffffff; padding: 6px; border-radius: 8px; align-self: flex-start; }
+.mfa-secret { font-size: 12px; overflow-wrap: anywhere; background: var(--surface-2); padding: 2px 6px; border-radius: 4px; }
+.new-note { display: flex; gap: 8px; margin-top: 10px; }
+.new-note input { flex: 1; min-width: 0; }
