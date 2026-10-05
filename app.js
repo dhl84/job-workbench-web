@@ -609,7 +609,13 @@
       html.push('<p class="muted" style="margin-top:0">Not checked yet. The worker checks active jobs once a day.</p>');
     }
     var links = [];
-    if (official.url) links.push('<a href="' + esc(official.url) + '" target="_blank" rel="noopener noreferrer">Employer advert</a>' + (official.published ? ' <span class="muted">published ' + esc(fmtDate(official.published)) + "</span>" : ""));
+    // The check details come from the worker. Away from home only the tracker row is
+    // there, so fall back to its advert link and LinkedIn listing.
+    var advertUrl = official.url || row.employer_url || row.discovery_url;
+    if (advertUrl) links.push('<a href="' + esc(advertUrl) + '" target="_blank" rel="noopener noreferrer">Advert</a>' + (official.published ? ' <span class="muted">published ' + esc(fmtDate(official.published)) + "</span>" : ""));
+    if (!(linkedin.jobs || []).length && row.linkedin_url && row.linkedin_url !== advertUrl) {
+      links.push('<a href="' + esc(row.linkedin_url) + '" target="_blank" rel="noopener noreferrer">LinkedIn listing</a>');
+    }
     (linkedin.jobs || []).forEach(function (j) {
       var extra = [j.age || (j.posted ? "posted " + fmtDate(j.posted) : ""), j.applicants, j.closed ? "closed" : ""].filter(Boolean).join(" · ");
       links.push('<a href="' + esc(j.url) + '" target="_blank" rel="noopener noreferrer">LinkedIn: ' + esc(j.title) + "</a>" + (extra ? ' <span class="muted">' + esc(extra) + "</span>" : ""));
@@ -621,7 +627,8 @@
       var href = folderFile(row, name);
       return href ? '<a href="' + esc(href) + '" target="_blank" rel="noopener">' + esc(label) + "</a>" : esc(label);
     });
-    html.push('<p class="muted" style="margin:8px 0 0">Saved adverts: ' + (copies.length ? copies.join(" · ") : "none") + "</p>");
+    html.push('<p class="muted" style="margin:8px 0 0">Saved adverts: ' + (copies.length ? copies.join(" · ")
+      : live ? "none" : "open job-ad.md or job-ad-applied.md under Notes") + "</p>");
     html.push('<div class="row" style="margin-top:8px"><button class="btn" type="button" data-action="check-posting"' + (live ? "" : " disabled") + ">Check now</button></div></div>");
     return html.join("");
   }
