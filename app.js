@@ -361,7 +361,8 @@
     clearTimeout(S.pollTimer);
     api("GET", "/api/state").then(function (data) {
       S.data = data; S.live = true;
-      showBanner("");
+      var git = data.git_sync;
+      showBanner(git && git.ok === false ? git.message + " The worker tries again every 5 minutes." : "");
       setConnection(); render();
       var busy = (data.tasks || []).some(function (t) { return t.status === "running" || t.status === "queued"; }) ||
         rows().some(function (r) { return r.research_status === "fetching" || r.research_status === "pending"; });
@@ -538,7 +539,8 @@
 
     html.push("<h3>Tasks</h3>" + (tasks.length ? "<div>" + tasks.map(function (t) {
       var tone = { done: "good", failed: "bad", running: "accent", queued: "muted", interrupted: "warn", cancelled: "muted", incomplete: "warn" }[t.status];
-      var check = t.check ? " " + pill(t.check.ok ? "Claims check passed" : "Claims check failed", t.check.ok ? "good" : "bad") : "";
+      var checkName = t.kind === "questions" ? "Quality check" : "Claims check";
+      var check = t.check ? " " + pill(checkName + (t.check.ok ? " passed" : " failed"), t.check.ok ? "good" : "bad") : "";
       return '<div class="task"><div><b>' + esc(t.label) + "</b> " + pill(t.status, tone) + check + '<div class="task-meta">' +
         esc(((S.data.providers || {})[t.provider] || {}).label || t.provider) + (t.model ? " · " + esc(t.model) : "") + " · " + esc(fmtTime(t.created)) + "</div></div>" +
         '<button class="btn btn-small" type="button" data-log="' + esc(t.id) + '"' + wdis + ">Log</button></div>";
