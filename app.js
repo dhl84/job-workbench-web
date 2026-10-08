@@ -250,17 +250,17 @@
   }
 
   // Supabase bills the data that it sends. Each poll reads the newest change time, one
-  // short row, and reads the whole table only when that time moved, or every 10 minutes
-  // to catch a deleted row. A hidden tab does not poll.
+  // short row, every 10 minutes. It reads the whole table only when that time moved, or
+  // every 30 minutes to catch a deleted row. A hidden tab does not poll.
   function cloudPoll() {
     clearTimeout(S.pollTimer);
     if (document.hidden) { S.pollTimer = null; return Promise.resolve(); }
-    var full = !S.cloudMark || Date.now() - (S.cloudFullAt || 0) > 600000;
+    var full = !S.cloudMark || Date.now() - (S.cloudFullAt || 0) > 1800000;
     if (full) return cloudRefresh();
     return SB.rest("opportunities?select=row_updated_at&order=row_updated_at.desc&limit=1").then(function (top) {
       var mark = top && top[0] ? top[0].row_updated_at : "";
       if (mark !== S.cloudMark) return cloudRefresh();
-      S.pollTimer = setTimeout(cloudPoll, 30000);
+      S.pollTimer = setTimeout(cloudPoll, 600000);
     }).catch(function () { S.pollTimer = setTimeout(cloudPoll, 60000); });
   }
 
@@ -283,7 +283,7 @@
       showBanner("The worker on the PC is not running. You can read and change the "
                  + "tracker here. AI work and advert fetching need the PC.");
       setConnection(); render();
-      S.pollTimer = setTimeout(cloudPoll, 30000);
+      S.pollTimer = setTimeout(cloudPoll, 600000);
     }).catch(function (error) {
       S.cloud = false;
       goOffline("Cloud read failed: " + error.message);
