@@ -249,9 +249,26 @@
     return { deadline: deadline, display_status: display };
   }
 
+  // Supabase bills the data that it sends. Each poll reads the newest change time, one
+  // short row, and reads the whole table only when that time moved, or every 10 minutes
+  // to catch a deleted row. A hidden tab does not poll.
+  function cloudPoll() {
+    clearTimeout(S.pollTimer);
+    if (document.hidden) { S.pollTimer = null; return Promise.resolve(); }
+    var full = !S.cloudMark || Date.now() - (S.cloudFullAt || 0) > 600000;
+    if (full) return cloudRefresh();
+    return SB.rest("opportunities?select=row_updated_at&order=row_updated_at.desc&limit=1").then(function (top) {
+      var mark = top && top[0] ? top[0].row_updated_at : "";
+      if (mark !== S.cloudMark) return cloudRefresh();
+      S.pollTimer = setTimeout(cloudPoll, 30000);
+    }).catch(function () { S.pollTimer = setTimeout(cloudPoll, 60000); });
+  }
+
   function cloudRefresh() {
     clearTimeout(S.pollTimer);
     return SB.rest("opportunities?select=*&order=updated_at.desc").then(function (list) {
+      S.cloudFullAt = Date.now();
+      S.cloudMark = (list || []).reduce(function (m, r) { return r.row_updated_at > m ? r.row_updated_at : m; }, "");
       var out = (list || []).map(function (row) {
         var extra = derive(row), copy = {}, key;
         for (key in row) { if (row.hasOwnProperty(key)) copy[key] = row[key]; }
@@ -266,7 +283,7 @@
       showBanner("The worker on the PC is not running. You can read and change the "
                  + "tracker here. AI work and advert fetching need the PC.");
       setConnection(); render();
-      S.pollTimer = setTimeout(cloudRefresh, 30000);
+      S.pollTimer = setTimeout(cloudPoll, 30000);
     }).catch(function (error) {
       S.cloud = false;
       goOffline("Cloud read failed: " + error.message);
@@ -1052,6 +1069,8 @@
     $("drawerBody").addEventListener("change", function (e) { if (e.target.id === "fProvider") renderModelSlot(); });
     $("scrim").addEventListener("click", function () { S.selected = null; render(); });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape" && S.selected && !document.querySelector("dialog[open]")) { S.selected = null; render(); } });
+    // A hidden tab stops the cloud poll. Start it again when the tab shows.
+    document.addEventListener("visibilitychange", function () { if (!document.hidden && S.cloud && !S.pollTimer) cloudPoll(); });
     $("addButton").addEventListener("click", function () { $("addMessage").hidden = true; $("addDialog").showModal(); });
     $("settingsButton").addEventListener("click", openSettings);
     $("signInButton").addEventListener("click", function () {
