@@ -472,6 +472,7 @@
         '<td><div class="role-title">' + esc(r.employer_name || "Unknown employer") + " · " + esc(r.job_title || "Untitled role") + research + "</div>" +
         (sub ? '<div class="role-sub">' + esc(sub) + "</div>" : "") + "</td>" +
         "<td>" + statusPill(r) + "</td><td>" + verdictPill(r.verdict) + "</td>" +
+        "<td>" + (r.score ? "<b>" + esc(r.score) + '</b><span class="muted">/10</span>' : '<span class="muted">—</span>') + "</td>" +
         "<td>" + (r.applied_at ? fmtDate(r.applied_at) : '<span class="muted">—</span>') + "</td>" +
         "<td>" + deadline + "</td><td>" + postingPill(r) + "</td><td>" + cv + "</td>" +
         '<td class="muted">' + esc(fmtDate(r.updated_at)) + "</td></tr>";
